@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>天气数据可视化 - 全球视野 (Three.js版)</title>
+  
+  <script src="js/d3.v3.min.js"></script>
+  
+  <script src="js/three.min.js"></script>
+  <script src="js/OrbitControls.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      color: #e2e8f0;
+      background: #1a202c; 
+      overflow: hidden; 
+    }
+    
+    /* UI 控制栏 */
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 26px;
+      background: rgba(30, 32, 44, 0.85);
+      border-bottom: 1px solid #2d3748;
+      backdrop-filter: blur(4px);
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 10;
+    }
+
+    .date-selects {
+      display: flex;
+      gap: 16px;
+    }
+
+    .date-select-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .date-select-group select {
+      height: 32px;
+      padding: 0 8px;
+      border: 1px solid #4a5568;
+      background: #2d3748;
+      color: #e2e8f0;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: .16s ease;
+      outline: none;
+    }
+    .date-select-group select:hover { border-color: #60a5fa; }
+
+    .nav { display: flex; gap: 10px; }
+    .nav-pill {
+      width: 110px; height: 32px;
+      border: 1px solid #4a5568;
+      background: #2d3748; color: #e2e8f0;
+      font-size: 13px; font-weight: 700;
+      cursor: pointer; border-radius: 2px;
+      transition: .16s ease;
+    }
+    .nav-pill:hover { border-color: #60a5fa; color: #bfdbfe; }
+    .nav-pill.active {
+      color: #fff; background: #3b97f6;
+      border-color: #3b97f6; box-shadow: 0 4px 12px rgba(59,151,246,.24);
+    }
+
+    /* 3D 容器与加载层 */
+    #canvas-container { width: 100vw; height: 100vh; }
+    .loading {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(26,32,44,.95); color: #60a5fa;
+      font-weight: 800; font-size: 18px; z-index: 20;
+    }
+    .loading.hidden { display: none; }
+
+    /* 自定义 Tooltip */
+    #tooltip {
+      position: absolute;
+      display: none;
+      background: rgba(30, 32, 44, 0.9);
+      border: 1px solid #4a5568;
+      color: #f0f4fa;
+      padding: 10px 14px;
+      border-radius: 4px;
+      pointer-events: none;
+      font-size: 14px;
+      z-index: 15;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      transform: translate(15px, 15px);
+    }
+    #tooltip .tt-title {
+      font-weight: 800; font-size: 16px;
+      border-bottom: 1px solid #4a5568;
+      padding-bottom: 6px; margin-bottom: 6px;
+      color: #d3ab47;
+    }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">正在初始化 3D 引擎与天气数据...</div>
+
+  <header class="top-bar">
+    <div class="date-selects">
+      <div class="date-select-group">
+        <select id="yearSelect" aria-label="年份"></select> <span>年</span>
+      </div>
+      <div class="date-select-group">
+        <select id="monthSelect" aria-label="月份"></select> <span>月</span>
+      </div>
+      <div class="date-select-group">
+        <select id="daySelect" aria-label="日期"></select> <span>日</span>
+      </div>
+    </div>
+  </header>
+
+  <div id="canvas-container"></div>
+  
+  <div id="tooltip">
+    <div class="tt-title" id="tt-city">城市名称</div>
+    <div id="tt-weather">天气：⛅ 未知</div>
+    <div id="tt-temp">温度：--℃ ~ --℃</div>
+  </div>
+
+  <script>
+    // ==================== 1. 数据配置与处理 ====================
+    const ordinaryFiles = [
+      "国内data/weather_data2505.csv", "国内data/weather_data2506.csv", 
+      "国内data/weather_data2507.csv", "国内data/weather_data2508.csv",
+      "国内data/weather_data2509.csv", "国内data/weather_data2510.csv", 
+      "国内data/weather_data2511.csv", "国内data/weather_data2512.csv",
+      "国内data/weather_data2601.csv", "国内data/weather_data2602.csv", 
+      "国内data/weather_data2603.csv", "国内data/weather_data2604.csv",
+      "国内data/weather_data2605.csv"
+    ];
+    const specialFiles = ["国内data/weather_香港_202505-202605.csv", "国内data/weather_澳门_202505-202605.csv", "国内data/weather_台北_202505-202605.csv"];
+    // 新增国外数据文件
+    const foreignFile = "weather_202505_202605.csv";
+    const allCsvFiles = [...ordinaryFiles, ...specialFiles, foreignFile];
+
+    // 国内+国外城市坐标映射 (基于 CSV 中所有出现的中文城市名)
+    const cityCoordinates = {
+      // 国内城市
+      "北京": [116.40, 39.90], "上海": [121.47, 31.23], "广州": [113.26, 23.12], 
+      "深圳": [114.05, 22.54], "成都": [104.06, 30.66], "重庆": [106.50, 29.53],
+      "杭州": [120.15, 30.28], "武汉": [114.30, 30.59], "西安": [108.94, 34.26],
+      "哈尔滨": [126.63, 45.75], "西宁": [101.77, 36.62], "兰州": [103.83, 36.06],
+      "银川": [106.23, 38.48], "石家庄": [114.48, 38.03], "太原": [112.53, 37.87],
+      "长春": [125.32, 43.81], "沈阳": [123.42, 41.79], "天津": [117.20, 39.13],
+      "济南": [117.00, 36.65], "拉萨": [91.11, 29.64], "昆明": [102.71, 25.04],
+      "郑州": [113.65, 34.76], "长沙": [112.93, 28.22], "贵阳": [106.71, 26.57],
+      "南京": [118.79, 32.04], "合肥": [117.22, 31.82], "南昌": [115.89, 28.68],
+      "福州": [119.29, 26.07], "南宁": [108.32, 22.82], "海口": [110.32, 20.03],
+      "呼和浩特": [111.65, 40.82], "乌鲁木齐": [87.61, 43.79], 
+      "香港": [114.17, 22.28], "澳门": [113.54, 22.19], "台北": [121.50, 25.04],
+      
+      // ========== 国外城市坐标 (基于爬虫数据) ==========
+      "哥本哈根": [12.57, 55.68],       // 丹麦
+      "坎帕拉": [32.58, 0.31],          // 乌干达
+      "耶路撒冷": [35.21, 31.77],       // 以色列
+      "德黑兰": [51.39, 35.69],         // 伊朗
+      "莫斯科": [37.62, 55.75],         // 俄罗斯
+      "多伦多": [-79.38, 43.65],        // 加拿大
+      "温哥华": [-123.12, 49.28],       // 加拿大
+      "阿克拉": [-0.20, 5.55],          // 加纳
+      "布达佩斯": [19.04, 47.50],       // 匈牙利
+      "孟买": [72.88, 19.08],           // 印度
+      "新德里": [77.21, 28.61],         // 印度
+      "雅加达": [106.85, -6.21],        // 印度尼西亚
+      "波哥大": [-74.07, 4.71],         // 哥伦比亚
+      "伊斯坦布尔": [28.98, 41.01],     // 土耳其
+      "开罗": [31.24, 30.04],           // 埃及
+      "亚的斯亚贝巴": [38.75, 9.03],    // 埃塞俄比亚
+      "达喀尔": [-17.44, 14.72],        // 塞内加尔
+      "墨西哥城": [-99.13, 19.43],      // 墨西哥
+      "维也纳": [16.37, 48.21],         // 奥地利
+      "达卡": [90.41, 23.81],           // 孟加拉国
+      "拉各斯": [3.38, 6.45],           // 尼日利亚
+      "圣保罗": [-46.63, -23.55],       // 巴西
+      "里约热内卢": [-43.20, -22.91],   // 巴西
+      "雅典": [23.73, 37.98],           // 希腊
+      "柏林": [13.40, 52.52],           // 德国
+      "罗马": [12.50, 41.90],           // 意大利
+      "奥斯陆": [10.75, 59.91],         // 挪威
+      "布拉格": [14.42, 50.08],         // 捷克
+      "卡萨布兰卡": [-7.59, 33.57],     // 摩洛哥
+      "科伦坡": [79.86, 6.93],          // 斯里兰卡
+      "新加坡": [103.85, 1.29],         // 新加坡
+      "奥克兰": [174.76, -36.85],       // 新西兰
+      "东京": [139.69, 35.68],          // 日本
+      "首尔": [126.98, 37.57],          // 韩国
+      "曼谷": [100.50, 13.73],          // 泰国
+      "吉隆坡": [101.69, 3.14],         // 马来西亚
+      "马尼拉": [120.98, 14.60],        // 菲律宾
+      "仰光": [96.15, 16.85],           // 缅甸
+      "河内": [105.85, 21.03],          // 越南
+      "利马": [-77.04, -12.05],         // 秘鲁
+      "突尼斯": [10.18, 36.81],         // 突尼斯
+      "安曼": [35.93, 31.95],           // 约旦
+      "内罗毕": [36.82, -1.29],         // 肯尼亚
+      "赫尔辛基": [24.94, 60.17],       // 芬兰
+      "伦敦": [-0.13, 51.51],           // 英国
+      "阿姆斯特丹": [4.90, 52.37],      // 荷兰
+      "里斯本": [-9.14, 38.72],         // 葡萄牙
+      "马德里": [-3.70, 40.42],         // 西班牙
+      "迪拜": [55.30, 25.27],           // 阿联酋
+      "利雅得": [46.72, 24.71],         // 沙特阿拉伯
+      "阿尔及尔": [3.05, 36.75],        // 阿尔及利亚
+      "布宜诺斯艾利斯": [-58.38, -34.60], // 阿根廷
+      "圣地亚哥": [-70.65, -33.45],     // 智利
+      "悉尼": [151.21, -33.87],         // 澳大利亚
+      "墨尔本": [144.96, -37.81],       // 澳大利亚
+      "布鲁塞尔": [4.35, 50.85],        // 比利时
+      "华沙": [21.01, 52.23],           // 波兰
+      "苏黎世": [8.54, 47.38],          // 瑞士
+      "巴黎": [2.35, 48.86],            // 法国
+      "斯德哥尔摩": [18.07, 59.33],     // 瑞典
+      "都柏林": [-6.26, 53.35]          // 爱尔兰
+    };
+
+    // 基础天气转 emoji（单个）
+    function getSingleWeatherEmoji(weather) {
+      if (!weather) return "⛅"; 
+      if (weather.includes("晴")) return "☀️";
+      if ( weather.includes("阴")) return "☁️";
+      if (weather.includes("云")) return "⛅";
+      if (weather.includes("雪")) return "❄️";
+      if (weather.includes("雨")) return "🌧️";
+      if (weather.includes("雷")) return "⛈️";
+      if (weather.includes("雾") || weather.includes("霾")) return "🌫️";
+      return "⛅";
+    }
+
+    // 改进版：处理“转”或“~”分隔的复合天气，为每个部分匹配 emoji 并用箭头连接
+    function getWeatherEmoji(weather) {
+      if (!weather) return "⛅";
+      // 常见分隔符：转、~、-
+      let parts = [];
+      if (weather.includes("转")) {
+        parts = weather.split("转");
+      } else if (weather.includes("~")) {
+        parts = weather.split("~");
+      } else if (weather.includes("-")) {
+        parts = weather.split("-");
+      } else {
+        parts = [weather];
+      }
+      // 过滤空字符串并去除首尾空格
+      parts = parts.map(p => p.trim()).filter(p => p.length > 0);
+      if (parts.length === 1) {
+        return getSingleWeatherEmoji(parts[0]);
+      } else {
+        const emojis = parts.map(p => getSingleWeatherEmoji(p));
+        return emojis.join("→");
+      }
+    }
+
+    const state = { rows: [], currentDate: "2026-05-31" };
+    let availableDates = [];
+
+    function mapRow(d) {
+      const row = {};
+      for (let key in d) {
+        const cleanKey = key.trim();
+        const val = d[key] ? d[key].trim() : "";
+        if (cleanKey === "date" || cleanKey === "日期") row.date = val;
+        else if (cleanKey === "city" || cleanKey === "城市") row.city = val;
+        else if (cleanKey === "weather_condition" || cleanKey === "天气" || cleanKey === "天气状况") row.weather_condition = val;
+        else if (cleanKey === "max_temperature" || cleanKey === "最高温") row.max_temperature = Number(val);
+        else if (cleanKey === "min_temperature" || cleanKey === "最低温") row.min_temperature = Number(val);
+      }
+      return row;
+    }
+
+    async function loadData() {
+      return new Promise((resolve) => {
+        let results = new Array(allCsvFiles.length);
+        let completed = 0;
+        allCsvFiles.forEach((file, idx) => {
+          d3.csv("./" + encodeURI(file), function(error, rawData) {
+            if (!error) results[idx] = rawData.map(mapRow);
+            else console.warn(file + " 读取失败");
+            completed++;
+            if (completed === allCsvFiles.length) {
+              state.rows = results.flat().filter(Boolean);
+              resolve();
+            }
+          });
+        });
+      });
+    }
+
+    function renderDateSelects() {
+      availableDates = [...new Set(state.rows.map(row => row.date).filter(Boolean))].sort();
+      if (availableDates.length === 0) return;
+
+      if (!state.currentDate || !availableDates.includes(state.currentDate)) {
+        state.currentDate = availableDates[availableDates.length - 1];
+      }
+
+      const [curY, curM, curD] = state.currentDate.split('-');
+      const yearSelect = document.getElementById("yearSelect");
+      const monthSelect = document.getElementById("monthSelect");
+      const daySelect = document.getElementById("daySelect");
+
+      const years = [...new Set(availableDates.map(d => d.split('-')[0]))];
+      yearSelect.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+      yearSelect.value = curY;
+
+      function updateMonths() {
+        const selectedY = yearSelect.value;
+        const months = [...new Set(availableDates.filter(d => d.startsWith(selectedY)).map(d => d.split('-')[1]))];
+        monthSelect.innerHTML = months.map(m => `<option value="${m}">${m}</option>`).join("");
+        if (!months.includes(monthSelect.value)) monthSelect.value = months[0];
+        updateDays();
+      }
+
+      function updateDays() {
+        const prefix = `${yearSelect.value}-${monthSelect.value}`;
+        const days = [...new Set(availableDates.filter(d => d.startsWith(prefix)).map(d => d.split('-')[2]))];
+        daySelect.innerHTML = days.map(d => `<option value="${d}">${d}</option>`).join("");
+        if (!days.includes(daySelect.value)) daySelect.value = days[0];
+        updateCurrentDate();
+      }
+
+      function updateCurrentDate() {
+        const newDate = `${yearSelect.value}-${monthSelect.value}-${daySelect.value}`;
+        if (state.currentDate !== newDate) {
+          state.currentDate = newDate;
+          updateMarkers();
+        }
+      }
+
+      yearSelect.onchange = updateMonths;
+      monthSelect.onchange = updateDays;
+      daySelect.onchange = updateCurrentDate;
+
+      const months = [...new Set(availableDates.filter(d => d.startsWith(curY)).map(d => d.split('-')[1]))];
+      monthSelect.innerHTML = months.map(m => `<option value="${m}">${m}</option>`).join("");
+      monthSelect.value = curM;
+
+      const prefix = `${curY}-${curM}`;
+      const days = [...new Set(availableDates.filter(d => d.startsWith(prefix)).map(d => d.split('-')[2]))];
+      daySelect.innerHTML = days.map(d => `<option value="${d}">${d}</option>`).join("");
+      daySelect.value = curD;
+    }
+
+    // ==================== 2. Three.js 核心逻辑 ====================
+    let scene, camera, renderer, controls, earth;
+    let markersGroup = new THREE.Group(); 
+    const EARTH_RADIUS = 50;
+    const SPHERE_RADIUS = 0.50;      
+    const GLOW_RADIUS = 0.85;        
+
+    function lonLatToVector3(lng, lat, radius) {
+      const phi = (90 - lat) * (Math.PI / 180);
+      const theta = (lng + 180) * (Math.PI / 180);
+      return new THREE.Vector3(
+        -(radius * Math.sin(phi) * Math.cos(theta)),
+        radius * Math.cos(phi),
+        radius * Math.sin(phi) * Math.sin(theta)
+      );
+    }
+
+    function initThree() {
+      const container = document.getElementById('canvas-container');
+      scene = new THREE.Scene();
+      scene.add(markersGroup);
+
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 30, 150);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(renderer.domElement);
+
+      renderer.domElement.style.pointerEvents = 'auto';
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.autoRotate = false; 
+      controls.minDistance = 60;
+      controls.maxDistance = 300;
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.95); 
+      scene.add(ambientLight);
+      
+      const camLight = new THREE.DirectionalLight(0xffffff, 0.2);
+      camera.add(camLight);
+      scene.add(camera);
+
+      const earthGeo = new THREE.SphereGeometry(EARTH_RADIUS, 64, 64);
+      const textureLoader = new THREE.TextureLoader();
+      
+      const earthMat = new THREE.MeshPhongMaterial({
+        map: textureLoader.load('./earth.jpg'),
+        bumpMap: textureLoader.load('./elevation.jpg'),
+        specular: new THREE.Color(0x222222),
+        shininess: 10
+      });
+      earth = new THREE.Mesh(earthGeo, earthMat);
+      scene.add(earth);
+      earth.add(markersGroup); 
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      initRaycaster();
+      animate();
+    }
+
+    // 创建带有柔和光晕的球形图标 (颜色 #702520)
+    function createMarkerIcon() {
+      const group = new THREE.Group();
+      
+      const mainMat = new THREE.MeshStandardMaterial({
+        color: 0x702520,
+        emissive: 0x3a1210,
+        emissiveIntensity: 0.60,
+        roughness: 0.28,
+        metalness: 0.05,
+      });
+      
+      const mainSphere = new THREE.Mesh(new THREE.SphereGeometry(SPHERE_RADIUS, 48, 48), mainMat);
+      group.add(mainSphere);
+      
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: 0x702520,
+        emissive: 0x5a1e18,
+        emissiveIntensity: 0.50,
+        transparent: true,
+        opacity: 0.27,
+        roughness: 0.4,
+        metalness: 0.02
+      });
+      const glowSphere = new THREE.Mesh(new THREE.SphereGeometry(GLOW_RADIUS, 48, 48), glowMat);
+      group.add(glowSphere);
+      
+      const outerGlowMat = new THREE.MeshStandardMaterial({
+        color: 0x8b3a2c,
+        transparent: true,
+        opacity: 0.20,
+        emissiveIntensity: 0.1,
+        side: THREE.BackSide
+      });
+      const outerGlow = new THREE.Mesh(new THREE.SphereGeometry(GLOW_RADIUS + 0.12, 32, 32), outerGlowMat);
+      group.add(outerGlow);
+      
+      group.userData.materials = {
+        main: mainMat,
+        glow: glowMat,
+        outer: outerGlowMat
+      };
+      
+      return group;
+    }
+
+    function updateMarkers() {
+      while(markersGroup.children.length > 0){ 
+          const child = markersGroup.children[0];
+          markersGroup.remove(child); 
+          if (child.userData && child.userData.materials) {
+            const mats = child.userData.materials;
+            if (mats.main) mats.main.dispose();
+            if (mats.glow) mats.glow.dispose();
+            if (mats.outer) mats.outer.dispose();
+          }
+          child.traverse(obj => {
+            if (obj.geometry) obj.geometry.dispose();
+          });
+      }
+
+      const dailyData = state.rows.filter(row => row.date === state.currentDate);
+
+      dailyData.forEach(row => {
+        const coords = cityCoordinates[row.city];
+        if (!coords) return;
+
+        const surfacePos = lonLatToVector3(coords[0], coords[1], EARTH_RADIUS);
+        const direction = surfacePos.clone().normalize();
+        
+        const marker = createMarkerIcon();
+        const offsetDistance = SPHERE_RADIUS; 
+        const finalPos = surfacePos.clone().add(direction.clone().multiplyScalar(offsetDistance));
+        marker.position.copy(finalPos);
+        marker.quaternion.identity();
+        
+        marker.userData = {
+          name: row.city,
+          weather: row.weather_condition,
+          tempMin: row.min_temperature,
+          tempMax: row.max_temperature
+        };
+        
+        markersGroup.add(marker);
+      });
+    }
+
+    // ==================== 3. 射线检测 (Tooltip交互) ====================
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let hoveredMarker = null;
+    const tooltip = document.getElementById('tooltip');
+
+    function initRaycaster() {
+      window.addEventListener('mousemove', (event) => {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(markersGroup.children, true);
+
+        if (intersects.length > 0) {
+          let hitGroup = intersects[0].object.parent;
+          while (hitGroup && !(hitGroup.userData && hitGroup.userData.name !== undefined && markersGroup.children.includes(hitGroup))) {
+            hitGroup = hitGroup.parent;
+            if (hitGroup === markersGroup) break;
+          }
+          if (!hitGroup || !markersGroup.children.includes(hitGroup)) {
+            hitGroup = intersects[0].object.parent;
+            while (hitGroup && hitGroup.parent !== markersGroup && hitGroup.parent) {
+              hitGroup = hitGroup.parent;
+            }
+          }
+          const targetMarker = hitGroup && markersGroup.children.includes(hitGroup) ? hitGroup : null;
+          
+          if (targetMarker && hoveredMarker !== targetMarker) {
+            if (hoveredMarker && hoveredMarker.userData.materials) {
+              const prevMats = hoveredMarker.userData.materials;
+              if (prevMats.main) {
+                prevMats.main.color.setHex(0x702520);
+                prevMats.main.emissive.setHex(0x3a1210);
+                prevMats.main.emissiveIntensity = 0.42;
+              }
+              if (prevMats.glow) {
+                prevMats.glow.color.setHex(0x702520);
+                prevMats.glow.emissive.setHex(0x5a1e18);
+                prevMats.glow.emissiveIntensity = 0.25;
+                prevMats.glow.opacity = 0.27;
+              }
+              if (prevMats.outer) {
+                prevMats.outer.color.setHex(0x8b3a2c);
+                prevMats.outer.opacity = 0.12;
+              }
+            }
+            hoveredMarker = targetMarker;
+            if (hoveredMarker.userData.materials) {
+              const mats = hoveredMarker.userData.materials;
+              if (mats.main) {
+                mats.main.color.setHex(0x521a12);
+                mats.main.emissive.setHex(0x2f0e0a);
+                mats.main.emissiveIntensity = 0.68;
+              }
+              if (mats.glow) {
+                mats.glow.color.setHex(0x6e2c20);
+                mats.glow.emissive.setHex(0x4a1812);
+                mats.glow.emissiveIntensity = 0.45;
+                mats.glow.opacity = 0.38;
+              }
+              if (mats.outer) {
+                mats.outer.color.setHex(0x7a3022);
+                mats.outer.opacity = 0.22;
+              }
+            }
+          }
+          
+          if (targetMarker) {
+            const data = targetMarker.userData;
+            document.getElementById('tt-city').textContent = data.name;
+            // 使用改进后的 getWeatherEmoji 为复合天气生成多个 emoji
+            const weatherEmoji = getWeatherEmoji(data.weather);
+            document.getElementById('tt-weather').textContent = `天气：${weatherEmoji} ${data.weather || '未知'}`;
+            document.getElementById('tt-temp').textContent = `温度：${data.tempMin}℃ ~ ${data.tempMax}℃`;
+            
+            tooltip.style.display = 'block';
+            tooltip.style.left = event.clientX + 'px';
+            tooltip.style.top = event.clientY + 'px';
+          } else {
+            if (hoveredMarker && hoveredMarker.userData.materials) {
+              const mats = hoveredMarker.userData.materials;
+              if (mats.main) {
+                mats.main.color.setHex(0x702520);
+                mats.main.emissive.setHex(0x3a1210);
+                mats.main.emissiveIntensity = 0.42;
+              }
+              if (mats.glow) {
+                mats.glow.color.setHex(0x702520);
+                mats.glow.emissive.setHex(0x5a1e18);
+                mats.glow.emissiveIntensity = 0.25;
+                mats.glow.opacity = 0.27;
+              }
+              if (mats.outer) {
+                mats.outer.color.setHex(0x8b3a2c);
+                mats.outer.opacity = 0.12;
+              }
+              hoveredMarker = null;
+            }
+            tooltip.style.display = 'none';
+          }
+        } else {
+          if (hoveredMarker && hoveredMarker.userData.materials) {
+            const mats = hoveredMarker.userData.materials;
+            if (mats.main) {
+              mats.main.color.setHex(0x702520);
+              mats.main.emissive.setHex(0x3a1210);
+              mats.main.emissiveIntensity = 0.42;
+            }
+            if (mats.glow) {
+              mats.glow.color.setHex(0x702520);
+              mats.glow.emissive.setHex(0x5a1e18);
+              mats.glow.emissiveIntensity = 0.25;
+              mats.glow.opacity = 0.27;
+            }
+            if (mats.outer) {
+              mats.outer.color.setHex(0x8b3a2c);
+              mats.outer.opacity = 0.12;
+            }
+            hoveredMarker = null;
+          }
+          tooltip.style.display = 'none';
+        }
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update(); 
+      renderer.render(scene, camera);
+    }
+
+    // ==================== 启动 ====================
+    async function start() {
+      initThree();
+      await loadData();
+      renderDateSelects();
+      updateMarkers();
+      document.getElementById('loading').classList.add('hidden');
+    }
+
+    start();
+  </script>
+</body>
+</html>

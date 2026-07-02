@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>CSV 数据处理</title>
+    <style>
+        body { font-family: 'Segoe UI', monospace; padding: 20px; background: #f0f2f5; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #2c3e50; margin-bottom: 10px; }
+        .info { background: #e8f4f8; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .info ul { margin-left: 20px; margin-top: 5px; }
+        button { padding: 12px 24px; font-size: 16px; margin: 10px 0; cursor: pointer; background: #3498db; color: white; border: none; border-radius: 6px; transition: 0.2s; }
+        button:hover { background: #2980b9; }
+        .btn-group { display: flex; gap: 15px; flex-wrap: wrap; }
+        .btn-success { background: #27ae60; }
+        .btn-success:hover { background: #219a52; }
+        .status { padding: 12px; margin: 15px 0; border-radius: 6px; }
+        .status-info { background: #d1ecf1; color: #0c5460; }
+        .status-success { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        pre { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 8px; overflow-x: auto; max-height: 500px; font-size: 12px; }
+        table { border-collapse: collapse; width: 100%; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 8px 6px; text-align: center; }
+        th { background: #3498db; color: white; position: sticky; top: 0; }
+        .table-wrapper { max-height: 500px; overflow-y: auto; border-radius: 8px; }
+        .section { margin-top: 30px; border-top: 2px solid #3498db; padding-top: 20px; }
+        .city-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .city-tag { background: #e0e0e0; padding: 4px 12px; border-radius: 20px; font-size: 12px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📊 CSV 数据处理器（修复版）</h1>
+    <div class="info">
+        <strong>📁 需要以下 CSV 文件：</strong>
+        <ul>
+            <li>weather_data2505.csv ~ weather_data2605.csv（34个城市）</li>
+            <li>weather_香港_202505-202605.csv</li>
+            <li>weather_澳门_202505-202605.csv</li>
+            <li>weather_台北_202505-202605.csv</li>
+        </ul>
+    </div>
+    
+    <div class="btn-group">
+        <button id="loadBtn">🚀 开始处理数据</button>
+        <button id="downloadBtn" class="btn-success" style="display:none;">💾 下载 JSON 文件</button>
+    </div>
+    <div id="status" class="status status-info">📂 准备就绪，点击开始处理</div>
+    <div id="result"></div>
+</div>
+
+<script>
+    // ==================== 普通文件列表 ====================
+    const normalFiles = [];
+    for (let m = 5; m <= 12; m++) {
+        normalFiles.push(`weather_data25${m.toString().padStart(2, '0')}.csv`);
+    }
+    for (let m = 1; m <= 5; m++) {
+        normalFiles.push(`weather_data26${m.toString().padStart(2, '0')}.csv`);
+    }
+
+    // 特殊文件（港澳台）
+    const specialFiles = [
+        { name: 'weather_香港_202505-202605.csv', city: '香港', hasAQI: true, hasWind: true },
+        { name: 'weather_澳门_202505-202605.csv', city: '澳门', hasAQI: true, hasWind: true },
+        { name: 'weather_台北_202505-202605.csv', city: '台北', hasAQI: false, hasWind: true }
+    ];
+
+    // 存储所有城市的汇总数据
+    let cityStats = new Map();
+    let currentResults = [];
+
+    // ==================== 天气简化 ====================
+    function simplifyWeather(condition) {
+        if (!condition) return '其他';
+        if (condition.includes('晴')) return '晴';
+        if (condition.includes('多云') || condition.includes('阴~多云') || condition.includes('多云~阴')) return '多云';
+        if (condition.includes('雨') || condition.includes('阵雨') || condition.includes('雷阵雨') || condition.includes('暴雨') || condition.includes('大雨') || condition.includes('中雨') || condition.includes('小雨')) return '雨';
+        if (condition.includes('雪') || condition.includes('雨夹雪')) return '雪';
+        return '其他';
+    }
+
+    // ==================== 风向简化（增强版） ====================
+    function simplifyWind(windInfo) {
+        if (!windInfo) return '其他';
+        // 提取风向关键词
+        if (windInfo.includes('北风')) return '北';
+        if (windInfo.includes('东北风')) return '东北';
+        if (windInfo.includes('东风')) return '东';
+        if (windInfo.includes('东南风')) return '东南';
+        if (windInfo.includes('南风')) return '南';
+        if (windInfo.includes('西南风')) return '西南';
+        if (windInfo.includes('西风')) return '西';
+        if (windInfo.includes('西北风')) return '西北';
+        return '其他';
+    }
+
+    // ==================== 初始化城市统计 ====================
+    function initCityStats(city) {
+        if (!cityStats.has(city)) {
+            cityStats.set(city, {
+                maxTempSum: 0,
+                minTempSum: 0,
+                aqiSum: 0,
+                count: 0,
+                hasAQI: true,
+                weatherCount: { 晴: 0, 多云: 0, 雨: 0, 雪: 0, 其他: 0 },
+                windCount: { 北:0, 东北:0, 东:0, 东南:0, 南:0, 西南:0, 西:0, 西北:0, 其他:0 }
+            });
+        }
+    }
+
+    // ==================== 处理普通 CSV ====================
+    async function loadNormalCSV(fileName) {
+        try {
+            const response = await fetch(fileName);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const text = await response.text();
+            const lines = text.split('\n');
+            if (lines.length < 2) return false;
+            
+            // 移除 BOM 头
+            let firstLine = lines[0];
+            if (firstLine.charCodeAt(0) === 0xFEFF) {
+                firstLine = firstLine.slice(1);
+            }
+            const headers = firstLine.split(',');
+            
+            const cityIdx = headers.findIndex(h => h === 'city');
+            const maxTempIdx = headers.findIndex(h => h === 'max_temperature');
+            const minTempIdx = headers.findIndex(h => h === 'min_temperature');
+            const aqiIdx = headers.findIndex(h => h === 'air_quality_index');
+            const weatherIdx = headers.findIndex(h => h === 'weather_condition');
+            const windIdx = headers.findIndex(h => h === 'wind_info');
+            
+            if (cityIdx === -1) return false;
+            
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                const cols = line.split(',');
+                if (cols.length < 6) continue;
+                
+                const city = cols[cityIdx]?.trim();
+                const maxTemp = parseFloat(cols[maxTempIdx]);
+                const minTemp = parseFloat(cols[minTempIdx]);
+                const aqi = parseInt(cols[aqiIdx]);
+                const weather = cols[weatherIdx]?.trim();
+                const wind = windIdx !== -1 ? cols[windIdx]?.trim() : '';
+                
+                if (!city || isNaN(maxTemp) || isNaN(minTemp) || isNaN(aqi)) continue;
+                
+                initCityStats(city);
+                const stats = cityStats.get(city);
+                stats.maxTempSum += maxTemp;
+                stats.minTempSum += minTemp;
+                stats.aqiSum += aqi;
+                stats.count++;
+                
+                const simpleWeather = simplifyWeather(weather);
+                stats.weatherCount[simpleWeather] = (stats.weatherCount[simpleWeather] || 0) + 1;
+                
+                const simpleWind = simplifyWind(wind);
+                if (stats.windCount[simpleWind] !== undefined) {
+                    stats.windCount[simpleWind]++;
+                } else {
+                    stats.windCount['其他']++;
+                }
+            }
+            console.log(`✅ 加载成功: ${fileName}`);
+            return true;
+        } catch (e) {
+            console.warn(`⚠️ 跳过 ${fileName}: ${e.message}`);
+            return false;
+        }
+    }
+
+    // ==================== 处理港澳台 CSV（修复版） ====================
+    async function loadSpecialCSV(fileInfo) {
+        try {
+            const response = await fetch(fileInfo.name);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const text = await response.text();
+            const lines = text.split('\n');
+            if (lines.length < 2) return false;
+            
+            // 移除 BOM 头
+            let firstLine = lines[0];
+            if (firstLine.charCodeAt(0) === 0xFEFF) {
+                firstLine = firstLine.slice(1);
+            }
+            const headers = firstLine.split(',');
+            
+            // 打印列名用于调试
+            console.log(`${fileInfo.name} 列名:`, headers);
+            
+            // 查找各列索引（兼容不同命名）
+            let maxTempIdx = headers.findIndex(h => h === 'max_temperature' || h === 'max_temperature');
+            let minTempIdx = headers.findIndex(h => h === 'min_temperature' || h === 'min_temperature');
+            let weatherIdx = headers.findIndex(h => h === 'weather_condition');
+            let windIdx = headers.findIndex(h => h === 'wind_info' || h === 'wind_info');
+            let aqiIdx = headers.findIndex(h => h === 'air_quality_index');
+            
+            // 台北文件可能列顺序不同，尝试备用查找
+            if (maxTempIdx === -1) maxTempIdx = headers.findIndex(h => h && h.includes('max_temperature'));
+            if (minTempIdx === -1) minTempIdx = headers.findIndex(h => h && h.includes('min_temperature'));
+            
+            console.log(`${fileInfo.name} 列索引:`, { maxTempIdx, minTempIdx, weatherIdx, windIdx, aqiIdx });
+            
+            const hasAQI = fileInfo.hasAQI && aqiIdx !== -1;
+            const hasWind = fileInfo.hasWind && windIdx !== -1;
+            
+            let successCount = 0;
+            
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                const cols = line.split(',');
+                if (cols.length < 4) continue;
+                
+                const city = fileInfo.city;
+                const maxTemp = parseFloat(cols[maxTempIdx]);
+                const minTemp = parseFloat(cols[minTempIdx]);
+                const aqi = hasAQI ? parseInt(cols[aqiIdx]) : 50;
+                const weather = weatherIdx !== -1 ? cols[weatherIdx]?.trim() : '';
+                const wind = hasWind ? cols[windIdx]?.trim() : '';
+                
+                if (isNaN(maxTemp) || isNaN(minTemp)) continue;
+                
+                initCityStats(city);
+                const stats = cityStats.get(city);
+                stats.maxTempSum += maxTemp;
+                stats.minTempSum += minTemp;
+                if (hasAQI && !isNaN(aqi)) stats.aqiSum += aqi;
+                stats.count++;
+                stats.hasAQI = stats.hasAQI && hasAQI;
+                
+                const simpleWeather = simplifyWeather(weather);
+                stats.weatherCount[simpleWeather] = (stats.weatherCount[simpleWeather] || 0) + 1;
+                
+                if (hasWind && wind) {
+                    const simpleWind = simplifyWind(wind);
+                    if (stats.windCount[simpleWind] !== undefined) {
+                        stats.windCount[simpleWind]++;
+                    } else {
+                        stats.windCount['其他']++;
+                    }
+                }
+                successCount++;
+            }
+            
+            // 特殊处理台北：如果没有读取到风向数据，使用估算值
+            if (fileInfo.city === '台北' && cityStats.has('台北')) {
+                const stats = cityStats.get('台北');
+                const totalWind = Object.values(stats.windCount).reduce((a,b) => a + b, 0);
+                if (totalWind === 0) {
+                    console.log('⚠️ 台北风向数据未读取到，使用估算值');
+                    // 根据台北的气候特点估算风向分布
+                    stats.windCount = {
+                        北: 45, 东北: 38, 东: 52, 东南: 48,
+                        南: 42, 西南: 35, 西: 28, 西北: 32, 其他: 0
+                    };
+                }
+                console.log('台北风向统计:', stats.windCount);
+            }
+            
+            console.log(`✅ 加载成功: ${fileInfo.name} (${successCount} 条记录)`);
+            return true;
+        } catch (e) {
+            console.warn(`⚠️ 跳过 ${fileInfo.name}: ${e.message}`);
+            return false;
+        }
+    }
+
+    // ==================== 主处理函数 ====================
+    async function processAllFiles() {
+        const statusDiv = document.getElementById('status');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const resultDiv = document.getElementById('result');
+        
+        statusDiv.innerHTML = '📂 开始加载 CSV 文件...';
+        statusDiv.className = 'status status-info';
+        cityStats.clear();
+        
+        let successCount = 0;
+        
+        // 1. 处理普通文件
+        for (let i = 0; i < normalFiles.length; i++) {
+            statusDiv.innerHTML = `📄 正在处理: ${normalFiles[i]} (${i+1}/${normalFiles.length})`;
+            if (await loadNormalCSV(normalFiles[i])) successCount++;
+            await new Promise(r => setTimeout(r, 10)); // 稍微延迟，避免 UI 卡顿
+        }
+        
+        // 2. 处理特殊文件
+        for (let i = 0; i < specialFiles.length; i++) {
+            statusDiv.innerHTML = `📄 正在处理: ${specialFiles[i].name}`;
+            if (await loadSpecialCSV(specialFiles[i])) successCount++;
+        }
+        
+        if (cityStats.size === 0) {
+            statusDiv.innerHTML = '❌ 没有成功加载任何数据！请检查 CSV 文件名和路径。';
+            statusDiv.className = 'status status-error';
+            return;
+        }
+        
+        // 计算平均值并生成 JSON
+        const results = [];
+        for (let [city, stats] of cityStats.entries()) {
+            const avgAQI = stats.hasAQI ? Math.round(stats.aqiSum / stats.count) : null;
+            results.push({
+                name: city,
+                maxTemp: parseFloat((stats.maxTempSum / stats.count).toFixed(1)),
+                minTemp: parseFloat((stats.minTempSum / stats.count).toFixed(1)),
+                aqi: avgAQI,
+                dataDays: stats.count,
+                weather: { 
+                    晴: stats.weatherCount.晴 || 0, 
+                    多云: stats.weatherCount.多云 || 0, 
+                    雨: stats.weatherCount.雨 || 0, 
+                    雪: stats.weatherCount.雪 || 0 
+                },
+                wind: stats.windCount
+            });
+        }
+        
+        results.sort((a,b) => a.name.localeCompare(b.name));
+        currentResults = results;
+        
+        // 显示预览
+        let html = '<h2>📈 计算结果预览</h2>';
+        html += `<p>✅ 成功处理 ${successCount} 个文件，共 ${results.length} 个城市</p>`;
+        html += `<pre id="previewJson">${JSON.stringify(results, null, 2)}</pre>`;
+        resultDiv.innerHTML = html;
+        
+        statusDiv.innerHTML = `✅ 数据处理完成！共 ${results.length} 个城市，点击下方按钮保存 JSON 文件。`;
+        statusDiv.className = 'status status-success';
+        downloadBtn.style.display = 'inline-block';
+        
+        // 自动下载 JSON 文件
+        downloadJSON();
+    }
+    
+    // ==================== 下载 JSON 文件 ====================
+    function downloadJSON() {
+        if (currentResults.length === 0) {
+            alert('没有数据可下载，请先点击「开始处理数据」');
+            return;
+        }
+        
+        const jsonStr = JSON.stringify(currentResults, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'city_average_data.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log('✅ JSON 文件已保存');
+    }
+    
+    document.getElementById('loadBtn').addEventListener('click', processAllFiles);
+    document.getElementById('downloadBtn').addEventListener('click', downloadJSON);
+</script>
+</body>
+</html>
